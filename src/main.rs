@@ -42,7 +42,6 @@ impl Router {
 }
 
 fn main() {
-    // let size = &response_body.to_string().as_bytes().len();
     let mut router = Router::default();
     router.register_route(
         Box::new(|request: &Request| {
@@ -61,32 +60,17 @@ fn main() {
         match stream {
             Ok(mut stream) => {
                 let request = Request::new(&mut stream);
-                println!("{}", &request.method);
-                println!("{}", &request.path);
-                println!("{:?}", &request.headers);
-
-                // let date = request
-                //     .headers
-                //     .get("X-Amz-Date")
-                //     .cloned()
-                //     .unwrap_or_default();
-
-                // let response = Response {
-                //     code: "200".into(),
-                //     headers: vec![
-                //         "x-amzn-RequestId: 2121212".into(),
-                //         "Content-Type: application/x-amz-json-1.0".into(),
-                //         format!("Content-Length: {}", size).into(),
-                //         format!("Date: {}", date).into(),
-                //     ],
-                //     body: Some(response_body.to_string().into()),
-                // };
+                println!(
+                    "{} {} {:?}",
+                    &request.method, &request.path, &request.headers
+                );
 
                 let response = router.route_request(request).unwrap();
 
-                stream
-                    .write_all(response.to_http_response().as_bytes())
-                    .unwrap();
+                stream.write(response.header.as_slice()).unwrap();
+                if let Some(body) = response.body {
+                    stream.write(body.as_slice()).unwrap();
+                }
             }
             Err(e) => {
                 println!("error: {}", e);

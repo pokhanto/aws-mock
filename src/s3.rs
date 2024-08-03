@@ -1,65 +1,76 @@
 use std::{
     fs,
-    io::{Read, Write},
+    io::{Read, Seek},
 };
-
-use itertools::Itertools;
 
 use crate::{
     request::Request,
-    response::{Body, Response},
+    response::{Response, ResponseBuilder},
 };
 
-// TODO: consider configurable transform of input file key
-fn get_key_from_path(path: String) -> String {
-    path.split("/").skip(2).join("~")
+// TODO: to config
+const FILE_NAME: &str = "file.mp3";
+
+pub fn upload(_request: Request) -> Response {
+    let response_builder = ResponseBuilder::new();
+    let response = response_builder
+        .status("200 OK")
+        .header("Connection: close")
+        .header("Server: Amazon S3")
+        .header("x-amz-id-2: id2")
+        .build();
+
+    response
 }
 
-pub fn upload(request: Request) -> Response {
-    let file_name = get_key_from_path(request.path);
-    if let Some(body) = request.body {
-        let mut file = fs::OpenOptions::new()
-            .create(true)
-            .write(true)
-            .open(file_name)
-            .unwrap();
-        file.write_all(&body).unwrap();
-    }
-
-    Response {
-        code: "200 OK".into(),
-        headers: vec![
-            "Connection: close".into(),
-            "Server: AmazonS3".into(),
-            "x-amz-id-2: id2".into(),
-        ],
-        body: None,
-    }
-}
-
+// TODO: revisit builder pattern, it feels wrong
 pub fn get_object(request: Request) -> Response {
-    let file_name = get_key_from_path(request.path);
-    let mut file = fs::OpenOptions::new().read(true).open(file_name).unwrap();
-    let range: (usize, usize) = request
-        .headers
-        .get("Range")
-        .map(|range_str| {
-            range_str
-                .replace("bytes=", "")
-                .split("-")
-                .map(|r| r.parse::<usize>().unwrap())
-                .collect_tuple::<(usize, usize)>()
-                .unwrap()
-        })
-        // whole file if no range
-        .unwrap_or((0, 22));
-    let file_size = range.1 - range.0;
-    let mut buffer: Vec<u8> = vec![0; file_size];
-    file.read_exact(&mut buffer).unwrap();
+    let mut file = fs::OpenOptions::new().read(true).open(FILE_NAME).unwrap();
+    let file_size = file.metadata().unwrap().len() as usize;
+    let mut response_builder = ResponseBuilder::new();
+    response_builder = response_builder
+        // TODO: needs to be configurable
+        .header("Content-Type: audio/mpeg")
+        .header("Accept-Ranges: bytes");
+    // TODO: extract and test range transformation
+    let range: Option<(usize, usize)> = request.headers.get("Range").and_then(|range_str| {
+        let range = range_str
+            .replace("bytes=", "")
+            .split("-")
+            .map(|r| r.parse::<usize>().unwrap())
+            .collect::<Vec<usize>>();
+        let start = range.get(0).copied().unwrap_or(0);
+        let end = range.get(1).copied().unwrap_or(file_size);
 
-    Response {
-        code: "200 OK".into(),
-        headers: vec![format!("Content-Length: {}", file_size)],
-        body: Some(Body::File(buffer)),
+        // TODO: check why it happens
+        if start >= end {
+            return None;
+        }
+
+        Some((start, end))
+    });
+    match range {
+        Some(range) => {
+            let requested_size = range.1 - range.0;
+            let mut buffer: Vec<u8> = vec![0; requested_size];
+            file.seek(std::io::SeekFrom::Start(range.0 as u64)).unwrap();
+            file.read_exact(&mut buffer).unwrap();
+
+            response_builder = response_builder
+                .status("206 Partial Content")
+                .header(
+                    format!("Content-Range: bytes {}-{}/{}", range.0, range.1, file_size).as_str(),
+                )
+                .file(buffer);
+        }
+        _ => {
+            let mut buffer: Vec<u8> = vec![0; file_size];
+            file.read_exact(&mut buffer).unwrap();
+            response_builder = response_builder.status("200 OK").file(buffer);
+        }
     }
+
+    let response = response_builder.build();
+
+    response
 }
